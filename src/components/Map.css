@@ -1,0 +1,86 @@
+/* Custom styles for OpenLayers map controls */
+
+/* Zoom slider */
+.ol-zoomslider {
+  top: 4.5em;
+  left: .5em;
+  height: 200px;
+  width: 28px;
+  background-color: rgba(255,255,255,0.4);
+  border-radius: 4px;
+}
+
+.ol-zoomslider-thumb {
+  height: 10px;
+  width: 22px;
+  margin: 3px;
+  background-color: rgba(0,60,136,0.7);
+  border-radius: 2px;
+}
+
+/* Scale line */
+.ol-scale-line {
+  background: rgba(0,0,0,0.5);
+  border-radius: 4px;
+  bottom: 8px;
+  left: 8px;
+  padding: 2px;
+}
+
+.ol-scale-line-inner {
+  border: 1px solid #eee;
+  border-top: none;
+  color: #eee;
+  font-size: 10px;
+  text-align: center;
+  margin: 1px;
+}
+
+/* Fullscreen button */
+.ol-full-screen {
+  right: .5em;
+  top: .5em;
+}
+
+/* Zoom buttons */
+.ol-zoom {
+  top: .5em;
+  left: .5em;
+}
+
+.ol-zoom .ol-zoom-in,
+.ol-zoom .ol-zoom-out {
+  font-size: 1.2em;
+  background-color: rgba(255,255,255,0.8);
+  border-radius: 4px;
+  margin: 1px;
+}
+
+.ol-zoom .ol-zoom-in:hover,
+.ol-zoom .ol-zoom-out:hover {
+  background-color: rgba(255,255,255,1);
+}
+
+/* Attribution */
+.ol-attribution {
+  background: rgba(255,255,255,0.8);
+  border-radius: 4px 0 0 0;
+}
+
+.ol-attribution button {
+  background-color: rgba(0,60,136,0.5);
+  color: white;
+  border-radius: 2px;
+}
+
+/* Mouse position */
+.ol-mouse-position {
+  top: 8px;
+  right: 8px;
+  position: absolute;
+  background: rgba(0,0,0,0.5);
+  color: white;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}

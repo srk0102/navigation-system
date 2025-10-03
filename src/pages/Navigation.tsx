@@ -8,6 +8,7 @@ import {
   startNavigation,
   stopNavigation,
   updatePosition,
+  addTrackPoint,
   updateConnectionStatus,
 } from "../store/slices/navigationSlice";
 import { MapComponent } from "../components/Map";
@@ -24,25 +25,13 @@ export function Navigation() {
   } = useSelector((state: RootState) => state.navigation);
   const config = useSelector((state: RootState) => state.config);
 
-  const [newWaypoint, setNewWaypoint] = useState({
-    name: "",
-    latitude: 0,
-    longitude: 0,
-  });
+  // Removed newWaypoint state - no longer needed since we auto-generate waypoints
   // Store the latest fused position in a ref
   const latestFusedPosition = useRef<any>(null);
   // Optionally, use local state for live display
   const [livePosition, setLivePosition] = useState<any>(null);
 
-  // State for individual sensor data
-  const [primaryGNSSData, setPrimaryGNSSData] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
-  const [secondaryGNSSData, setSecondaryGNSSData] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
+  // State for IMU data (only what we actually use)
   const [imuData, setIMUData] = useState<{
     heading: number;
     elevation: number;
@@ -50,9 +39,49 @@ export function Navigation() {
     gyroscope: { x: number; y: number; z: number };
   } | null>(null);
 
+  // Store individual GPS positions for fusion
+  const primaryGPS = useRef<{ lat: number; lon: number } | null>(null);
+  const secondaryGPS = useRef<{ lat: number; lon: number } | null>(null);
+
   // Use a ref to track the last update time for throttling
   const lastUpdateTimeRef = useRef<number>(0);
-  const updateIntervalMs = 100; // Update at most every 100ms for responsive IMU updates
+
+  // RTK GPS Correction Function
+  // Uses primary GPS (rover) with secondary GPS (base) for RTK correction
+  const getRTKCorrectedPosition = (): { lat: number; lon: number } | null => {
+    const rover = primaryGPS.current; // Moving rover GPS
+    const base = secondaryGPS.current; // Fixed base station GPS
+
+    // If we have both base and rover, use RTK correction
+    if (rover && base) {
+      // RTK correction: Use rover position with base corrections
+      // For now, we'll use the rover position directly (base provides corrections via NTRIP/RTCM)
+      // In a real RTK system, the rover would already have base corrections applied
+
+      return {
+        lat: rover.lat,
+        lon: rover.lon,
+      };
+    }
+
+    // Fallback: Use rover if available
+    if (rover) {
+      return {
+        lat: rover.lat,
+        lon: rover.lon,
+      };
+    }
+
+    // Fallback: Use base if available
+    if (base) {
+      return {
+        lat: base.lat,
+        lon: base.lon,
+      };
+    }
+
+    return null;
+  };
 
   // Vessel dimensions (would come from settings in a real app)
   const [vesselDimensions, setVesselDimensions] = useState({
@@ -61,9 +90,17 @@ export function Navigation() {
     color: "#22c55e",
   });
 
+  // ========================================================================
+  // REACT HOOKS AND REFS
+  // ========================================================================
+
   // create a single DataProcessor instance for this component
   const dataProcessorRef = useRef(new DataProcessor()).current;
   const latest = useRef<{ lat?: number; lon?: number; hdg?: number }>({});
+
+  // ========================================================================
+  // CONFIGURATION AND INITIALIZATION EFFECTS
+  // ========================================================================
 
   // Update vessel dimensions from configuration or settings
   useEffect(() => {
@@ -92,11 +129,11 @@ export function Navigation() {
           await window.ipcRenderer.navigation.connectToPort(
             config.imu.port.path,
             config.imu.port.baudRate,
-            'imu'
+            "imu"
           );
         }
       } catch (error) {
-        console.error('Auto-connection error:', error);
+        console.error("Auto-connection error:", error);
       }
     };
 
@@ -104,13 +141,20 @@ export function Navigation() {
     setTimeout(autoConnectPorts, 500);
   }, [config.imu.port.enabled, config.imu.port.path, config.imu.port.baudRate]);
 
-  // Updated serial data handler in Navigation.tsx
+  // ========================================================================
+  // SERIAL DATA COMMUNICATION EFFECTS
+  // ========================================================================
 
+  // IPC Communication - Handle serial data from main process
   useEffect(() => {
     const handleSerialData = (data: any) => {
       if (data.portType === "imu") {
         // Check if this is already processed WIT-Motion data or raw text data
-        if (data.data && typeof data.data === 'object' && typeof data.data.heading === 'number') {
+        if (
+          data.data &&
+          typeof data.data === "object" &&
+          typeof data.data.heading === "number"
+        ) {
           // This is already processed WIT-Motion data
           const imu = data.data;
           if (imu && Number.isFinite(imu.heading)) {
@@ -148,24 +192,24 @@ export function Navigation() {
       ) {
         const isPrimary = data.portType === "primaryGNSS";
         const gps = dataProcessorRef.processGPSData(data.data, isPrimary);
-        if (gps && Number.isFinite(gps.latitude) && Number.isFinite(gps.longitude)) {
+        if (
+          gps &&
+          Number.isFinite(gps.latitude) &&
+          Number.isFinite(gps.longitude)
+        ) {
           if (isPrimary) {
-            setPrimaryGNSSData({
-              latitude: gps.latitude,
-              longitude: gps.longitude,
-            });
-            latest.current.lat = gps.latitude; // <— ONLY lat
-            latest.current.lon = gps.longitude; // <— ONLY lon
+            // Store primary GPS position
+            primaryGPS.current = { lat: gps.latitude, lon: gps.longitude };
           } else {
-            setSecondaryGNSSData({
-              latitude: gps.latitude,
-              longitude: gps.longitude,
-            });
-            // optional fallback if primary missing:
-            if (latest.current.lat == null) {
-              latest.current.lat = gps.latitude;
-              latest.current.lon = gps.longitude;
-            }
+            // Store secondary GPS position
+            secondaryGPS.current = { lat: gps.latitude, lon: gps.longitude };
+          }
+
+          // Get RTK corrected position
+          const rtkPosition = getRTKCorrectedPosition();
+          if (rtkPosition) {
+            latest.current.lat = rtkPosition.lat;
+            latest.current.lon = rtkPosition.lon;
           }
         }
       }
@@ -189,83 +233,103 @@ export function Navigation() {
     };
   }, [dispatch, dataProcessorRef]);
 
-  // Update the fused position calculation
+  // ========================================================================
+  // POSITION UPDATE AND TRACKING EFFECTS
+  // ========================================================================
+
+  // SINGLE HIGH-FREQUENCY POSITION UPDATE SYSTEM
+  // This replaces all the chaotic overlapping effects with one clean, efficient system
   useEffect(() => {
-    const currentTime = Date.now();
+    const updatePosition = () => {
+      // Only update if we have valid sensor data
+      if (latest.current.lat != null && latest.current.lon != null) {
+        const currentTime = Date.now();
 
-    // Throttle position updates
-    if (currentTime - lastUpdateTimeRef.current < updateIntervalMs) {
-      return;
-    }
-    lastUpdateTimeRef.current = currentTime;
-
-    // Only update if we have valid sensor data
-    if (latest.current.lat != null && latest.current.lon != null) {
-      const fusedPosition = {
-        latitude: latest.current.lat,
-        longitude: latest.current.lon,
-        heading: latest.current.hdg ?? 0,
-        elevation: 0,
-        speed: 0, // Will be calculated from position changes if needed
-        accuracy: 5, // Default accuracy in meters
-      };
-
-      setLivePosition(fusedPosition);
-      latestFusedPosition.current = fusedPosition;
-    }
-  }, [primaryGNSSData, secondaryGNSSData, imuData]);
-
-  // Separate effect to update vessel heading in real-time when IMU data changes
-  useEffect(() => {
-    if (livePosition && latest.current.hdg !== undefined) {
-      const currentTime = Date.now();
-      
-      // Update heading more frequently for smooth vessel rotation
-      if (currentTime - lastUpdateTimeRef.current < 50) { // 20 FPS for heading updates
-        return;
-      }
-      lastUpdateTimeRef.current = currentTime;
-
-      const updatedPosition = {
-        ...livePosition,
-        heading: latest.current.hdg,
-      };
-
-      setLivePosition(updatedPosition);
-      latestFusedPosition.current = updatedPosition;
-    }
-  }, [imuData, livePosition]);
-
-  // When navigation is started, periodically dispatch to Redux (or on stop)
-  useEffect(() => {
-    let interval: any = null;
-    if (isNavigating) {
-      interval = setInterval(() => {
-        if (latestFusedPosition.current) {
-          dispatch(
-            updatePosition({
-              ...latestFusedPosition.current,
-              timestamp: new Date().toISOString(),
-            })
-          );
+        // High-frequency updates (every 10ms = 100 FPS)
+        if (currentTime - lastUpdateTimeRef.current < 10) {
+          return;
         }
-      }, 1000); // e.g., update Redux every 1s while navigating
-    } else {
-      // On stop, push the last position
-      if (latestFusedPosition.current) {
-        dispatch(
-          updatePosition({
+        lastUpdateTimeRef.current = currentTime;
+
+        const newPosition = {
+          latitude: latest.current.lat,
+          longitude: latest.current.lon,
+          heading: latest.current.hdg ?? 0,
+          elevation: imuData?.elevation ?? 0,
+          speed: 0,
+          accuracy: 5,
+        };
+
+        // Only update if position actually changed
+        if (
+          !livePosition ||
+          livePosition.latitude !== newPosition.latitude ||
+          livePosition.longitude !== newPosition.longitude ||
+          livePosition.heading !== newPosition.heading ||
+          livePosition.elevation !== newPosition.elevation
+        ) {
+          setLivePosition(newPosition);
+          latestFusedPosition.current = newPosition;
+        }
+      }
+    };
+
+    // Start high-frequency position updates
+    const intervalId = setInterval(updatePosition, 10);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [livePosition, imuData?.elevation]); // Include dependencies to prevent stale closures
+
+  // NAVIGATION TRACKING - Save position to Redux store periodically
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+
+    if (isNavigating) {
+      // Save position to Redux every 1 second while navigating
+      intervalId = setInterval(() => {
+        if (latestFusedPosition.current) {
+          const positionData = {
             ...latestFusedPosition.current,
             timestamp: new Date().toISOString(),
-          })
-        );
+          };
+          
+          // Update current position
+          dispatch(updatePosition(positionData));
+          
+          // Add track point to current path
+          dispatch(addTrackPoint(positionData));
+          
+          console.log(`[Navigation] Track point added: (${positionData.latitude.toFixed(6)}, ${positionData.longitude.toFixed(6)})`);
+        }
+      }, 1000);
+    } else {
+      // On navigation stop, save the final position
+      if (latestFusedPosition.current) {
+        const positionData = {
+          ...latestFusedPosition.current,
+          timestamp: new Date().toISOString(),
+        };
+        
+        // Update current position
+        dispatch(updatePosition(positionData));
+        
+        // Add final track point to current path
+        dispatch(addTrackPoint(positionData));
+        
+        console.log(`[Navigation] Final track point added: (${positionData.latitude.toFixed(6)}, ${positionData.longitude.toFixed(6)})`);
       }
-      if (interval) clearInterval(interval);
     }
+
     return () => {
-      if (interval) clearInterval(interval);
+      if (intervalId) clearInterval(intervalId);
     };
   }, [isNavigating, dispatch]);
+
+  // ========================================================================
+  // MEMOIZED VALUES AND HANDLERS
+  // ========================================================================
 
   // Prepare map props using useMemo to prevent unnecessary re-renders
 
@@ -275,6 +339,7 @@ export function Navigation() {
       name: wp.name,
       latitude: wp.latitude,
       longitude: wp.longitude,
+      heading: wp.heading || 0, // Default to 0 if heading not available
     }));
   }, [waypoints]);
 
@@ -306,9 +371,26 @@ export function Navigation() {
   }, [livePosition]);
 
   const handleAddWaypoint = () => {
-    if (newWaypoint.name && newWaypoint.latitude && newWaypoint.longitude) {
+    if (livePosition && imuData) {
+      // Auto-generate waypoint name with timestamp
+      const timestamp = new Date().toLocaleTimeString();
+      const waypointName = `WP_${timestamp}`;
+
+      const newWaypoint = {
+        id: `waypoint_${Date.now()}`,
+        name: waypointName,
+        latitude: livePosition.latitude,  // GPS position
+        longitude: livePosition.longitude, // GPS position
+        heading: imuData.heading,         // IMU heading for waypoint orientation
+        timestamp: new Date().toISOString(),
+      };
+
       dispatch(addWaypoint(newWaypoint));
-      setNewWaypoint({ name: "", latitude: 0, longitude: 0 });
+      console.log(
+        `[Waypoint] Added: ${waypointName} at (${livePosition.latitude.toFixed(
+          6
+        )}, ${livePosition.longitude.toFixed(6)}) with IMU heading: ${imuData.heading.toFixed(1)}°`
+      );
     }
   };
 
@@ -331,49 +413,167 @@ export function Navigation() {
         ? savedRoutes[savedRoutes.length - 1]
         : currentPath;
 
-    if (!routeToExport) {
+    if (!routeToExport || routeToExport.trackPoints.length === 0) {
       alert(
         "No route to export. Please start and stop navigation to record a path."
       );
       return;
     }
 
-    const routeData = {
-      id: routeToExport.id,
-      name: routeToExport.name,
-      startTime: routeToExport.startTime,
-      endTime: routeToExport.endTime,
-      waypoints: routeToExport.waypoints,
-      trackPoints: routeToExport.trackPoints,
-      distance: routeToExport.distance,
-      duration: routeToExport.duration,
-      // include sensor message log for playback/analysis
-      sensorLog: [],
-      statistics: {
-        totalPoints: routeToExport.trackPoints.length,
-        avgSpeed:
-          routeToExport.trackPoints.length > 0
-            ? routeToExport.trackPoints.reduce((sum, p) => sum + p.speed, 0) /
-              routeToExport.trackPoints.length
-            : 0,
-        maxSpeed:
-          routeToExport.trackPoints.length > 0
-            ? Math.max(...routeToExport.trackPoints.map((p) => p.speed))
-            : 0,
-      },
-    };
-
-    const dataStr = JSON.stringify(routeData, null, 2);
-    const dataBlob = new Blob([dataStr], { type: "application/json" });
-    const url = URL.createObjectURL(dataBlob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${routeToExport.name.replace(/\s/g, "-")}-${
-      new Date().toISOString().split("T")[0]
-    }.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    console.log("📤 Starting comprehensive export...");
+    
+    // Create timestamp for filename
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `navigation-track-${timestamp}`;
+    
+    // Export JSON data
+    exportTrackingData(routeToExport, filename);
   };
+
+  const exportTrackingData = (routeToExport: any, filename: string) => {
+    try {
+      // Calculate comprehensive tracking statistics
+      const trackingStats = calculateTrackingStatistics(routeToExport);
+      
+      // Prepare comprehensive tracking data
+      const trackingData = {
+        timestamp: new Date().toISOString(),
+        filename: filename,
+        vesselInfo: {
+          dimensions: vesselDimensions,
+          currentPosition: livePosition,
+        },
+        route: routeToExport,
+        waypoints: waypoints.map(wp => ({
+          id: wp.id,
+          name: wp.name,
+          latitude: wp.latitude,
+          longitude: wp.longitude,
+          heading: wp.heading,
+          timestamp: wp.timestamp
+        })),
+        statistics: trackingStats,
+        systemInfo: {
+          gpsConfiguration: {
+            primaryPort: config.ublox.primary.path || 'N/A',
+            secondaryPort: config.ublox.secondary.path || 'N/A',
+            baudRate: config.ublox.primary.baudRate || 'N/A',
+          },
+          imuData: imuData ? {
+            heading: imuData.heading,
+            acceleration: imuData.acceleration,
+          } : null,
+          connectionStatus: connectionStatus,
+        }
+      };
+      
+      // Save JSON data
+      const jsonData = JSON.stringify(trackingData, null, 2);
+      const blob = new Blob([jsonData], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${filename}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      console.log("✅ JSON tracking data exported successfully!");
+      
+    } catch (error) {
+      console.error("❌ JSON export failed:", error);
+      alert("Failed to export tracking data: " + (error as Error).message);
+    }
+  };
+
+  const calculateTrackingStatistics = (routeToExport: any) => {
+    const stats = {
+      startTime: null as string | null,
+      endTime: null as string | null,
+      duration: null as string | null,
+      totalDistance: '0.00 mi',
+      avgSpeed: '0.00 mph',
+      startCoords: '--',
+      endCoords: '--',
+      totalTrackPoints: routeToExport.trackPoints.length,
+      totalWaypoints: waypoints.length,
+      maxSpeed: '0.00 mph',
+      minSpeed: '0.00 mph'
+    };
+    
+    if (routeToExport.trackPoints.length === 0) {
+      return stats;
+    }
+    
+    // Time information
+    const firstPoint = routeToExport.trackPoints[0];
+    const lastPoint = routeToExport.trackPoints[routeToExport.trackPoints.length - 1];
+    
+    if (firstPoint.timestamp && lastPoint.timestamp) {
+      const startTime = new Date(firstPoint.timestamp);
+      const endTime = new Date(lastPoint.timestamp);
+      
+      stats.startTime = startTime.toLocaleTimeString();
+      stats.endTime = endTime.toLocaleTimeString();
+      
+      const durationMs = endTime.getTime() - startTime.getTime();
+      const durationMinutes = Math.round(durationMs / 60000);
+      stats.duration = `${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m`;
+    }
+    
+    // Distance and speed calculations
+    let totalDistanceMeters = 0;
+    const speeds: number[] = [];
+    
+    for (let i = 1; i < routeToExport.trackPoints.length; i++) {
+      const dist = calculateDistance(
+        routeToExport.trackPoints[i-1].latitude, routeToExport.trackPoints[i-1].longitude,
+        routeToExport.trackPoints[i].latitude, routeToExport.trackPoints[i].longitude
+      );
+      totalDistanceMeters += dist;
+      
+      // Calculate speed if timestamps available
+      if (routeToExport.trackPoints[i-1].timestamp && routeToExport.trackPoints[i].timestamp) {
+        const timeDelta = new Date(routeToExport.trackPoints[i].timestamp).getTime() - 
+                         new Date(routeToExport.trackPoints[i-1].timestamp).getTime();
+        if (timeDelta > 0) {
+          const speedMps = dist / (timeDelta / 1000);
+          const speedMph = speedMps * 2.237;
+          speeds.push(speedMph);
+        }
+      }
+    }
+    
+    const totalDistanceMiles = totalDistanceMeters * 0.000621371;
+    stats.totalDistance = totalDistanceMiles.toFixed(2) + ' mi';
+    
+    // Speed statistics
+    if (speeds.length > 0) {
+      const avgSpeed = speeds.reduce((sum, speed) => sum + speed, 0) / speeds.length;
+      stats.avgSpeed = avgSpeed.toFixed(2) + ' mph';
+      stats.maxSpeed = Math.max(...speeds).toFixed(2) + ' mph';
+      stats.minSpeed = Math.min(...speeds).toFixed(2) + ' mph';
+    }
+    
+    // Coordinates
+    stats.startCoords = `${firstPoint.latitude.toFixed(4)}, ${firstPoint.longitude.toFixed(4)}`;
+    stats.endCoords = `${lastPoint.latitude.toFixed(4)}, ${lastPoint.longitude.toFixed(4)}`;
+    
+    return stats;
+  };
+
+  const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371000; // Earth's radius in meters
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -386,21 +586,47 @@ export function Navigation() {
           </h2>
           {livePosition ? (
             <div className="space-y-1 text-xs font-mono">
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <span className="text-gray-600 dark:text-gray-400">
                   Latitude:
                 </span>
-                <span className="text-gray-900 dark:text-white font-semibold">
-                  {livePosition.latitude.toFixed(6)}°
-                </span>
+                <div className="flex items-center space-x-2">
+                  <span className="text-gray-900 dark:text-white font-semibold">
+                    {livePosition.latitude.toFixed(6)}°
+                  </span>
+                  <span
+                    className={`px-1 py-0.5 rounded text-xs ${
+                      primaryGPS.current && secondaryGPS.current
+                        ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                        : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    }`}
+                  >
+                    {primaryGPS.current && secondaryGPS.current
+                      ? "RTK"
+                      : "SINGLE"}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <span className="text-gray-600 dark:text-gray-400">
                   Longitude:
                 </span>
-                <span className="text-gray-900 dark:text-white font-semibold">
-                  {livePosition.longitude.toFixed(6)}°
-                </span>
+                <div className="flex items-center space-x-2">
+                  <span className="text-gray-900 dark:text-white font-semibold">
+                    {livePosition.longitude.toFixed(6)}°
+                  </span>
+                  <span
+                    className={`px-1 py-0.5 rounded text-xs ${
+                      primaryGPS.current && secondaryGPS.current
+                        ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                        : "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                    }`}
+                  >
+                    {primaryGPS.current && secondaryGPS.current
+                      ? "RTK"
+                      : "SINGLE"}
+                  </span>
+                </div>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-gray-600 dark:text-gray-400">
@@ -408,13 +634,18 @@ export function Navigation() {
                 </span>
                 <div className="flex items-center space-x-2">
                   <div className="w-6 h-6 border-2 border-gray-400 rounded-full flex items-center justify-center">
-                    <div 
+                    <div
                       className="w-1 h-3 bg-red-500 rounded-full"
-                      style={{ transform: `rotate(${livePosition.heading}deg)` }}
+                      style={{
+                        transform: `rotate(${livePosition.heading}deg)`,
+                      }}
                     ></div>
                   </div>
                   <span className="text-gray-900 dark:text-white font-semibold text-lg">
                     {livePosition.heading.toFixed(1)}°
+                  </span>
+                  <span className="px-1 py-0.5 rounded text-xs bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                    IMU
                   </span>
                 </div>
               </div>
@@ -423,7 +654,7 @@ export function Navigation() {
                   Elevation:
                 </span>
                 <span className="text-gray-900 dark:text-white font-semibold">
-                  {livePosition.elevation.toFixed(1)}m
+                  {imuData?.acceleration?.z?.toFixed(2) || "0.00"}m
                 </span>
               </div>
               <div className="flex justify-between">
@@ -499,49 +730,6 @@ export function Navigation() {
           </div>
         </div>
 
-        {/* IMU Sensor Data */}
-        {imuData && (
-          <div className="p-4 bg-purple-50 dark:bg-purple-900/20 border-b border-purple-200 dark:border-purple-800">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">
-              IMU Sensor Data
-            </h2>
-            <div className="space-y-2 text-xs font-mono">
-              <div className="flex justify-between">
-                <span className="text-gray-600 dark:text-gray-400">Heading:</span>
-                <span className="text-purple-600 dark:text-purple-400 font-bold">
-                  {imuData.heading.toFixed(1)}°
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600 dark:text-gray-400">Pitch:</span>
-                <span className="text-gray-900 dark:text-white">
-                  {imuData.elevation.toFixed(1)}°
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600 dark:text-gray-400">Roll:</span>
-                <span className="text-gray-900 dark:text-white">
-                  {imuData.gyroscope?.x?.toFixed(1) || '0.0'}°
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div className="text-center">
-                  <div className="text-gray-500">Accel X</div>
-                  <div className="font-mono">{imuData.acceleration?.x?.toFixed(2) || '0.00'}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-gray-500">Accel Y</div>
-                  <div className="font-mono">{imuData.acceleration?.y?.toFixed(2) || '0.00'}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-gray-500">Accel Z</div>
-                  <div className="font-mono">{imuData.acceleration?.z?.toFixed(2) || '0.00'}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Navigation Control */}
         <div className="p-4 border-b border-gray-200 dark:border-gray-700 space-y-2">
           <button
@@ -556,9 +744,9 @@ export function Navigation() {
           </button>
           <button
             onClick={handleExportRoute}
-            disabled={waypoints.length === 0}
+            disabled={!((savedRoutes.length > 0 && savedRoutes[savedRoutes.length - 1]?.trackPoints.length > 0) || (currentPath && currentPath.trackPoints.length > 0))}
             className={`w-full py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
-              waypoints.length > 0
+              (savedRoutes.length > 0 && savedRoutes[savedRoutes.length - 1]?.trackPoints.length > 0) || (currentPath && currentPath.trackPoints.length > 0)
                 ? "bg-blue-600 hover:bg-blue-700 text-white"
                 : "bg-gray-300 dark:bg-gray-700 text-gray-500 dark:text-gray-500 cursor-not-allowed"
             }`}
@@ -570,51 +758,15 @@ export function Navigation() {
         {/* Add Waypoint */}
         <div className="p-4 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">
-            Add Waypoint
+            Add Current Position as Waypoint
           </h2>
-          <div className="space-y-2">
-            <input
-              type="text"
-              placeholder="Waypoint Name"
-              value={newWaypoint.name}
-              onChange={(e) =>
-                setNewWaypoint({ ...newWaypoint, name: e.target.value })
-              }
-              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            />
-            <input
-              type="number"
-              step="0.000001"
-              placeholder="Latitude"
-              value={newWaypoint.latitude || ""}
-              onChange={(e) =>
-                setNewWaypoint({
-                  ...newWaypoint,
-                  latitude: parseFloat(e.target.value) || 0,
-                })
-              }
-              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            />
-            <input
-              type="number"
-              step="0.000001"
-              placeholder="Longitude"
-              value={newWaypoint.longitude || ""}
-              onChange={(e) =>
-                setNewWaypoint({
-                  ...newWaypoint,
-                  longitude: parseFloat(e.target.value) || 0,
-                })
-              }
-              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            />
-            <button
-              onClick={handleAddWaypoint}
-              className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
-            >
-              Add Waypoint
-            </button>
-          </div>
+          <button
+            onClick={handleAddWaypoint}
+            disabled={!livePosition}
+            className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            {livePosition ? "Add Waypoint" : "No Position Available"}
+          </button>
         </div>
 
         {/* Waypoints List */}
@@ -710,7 +862,10 @@ export function Navigation() {
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-3 w-3 bg-white"></span>
               </span>
-              <span className="font-semibold">Navigation Active</span>
+              <span className="font-semibold">Recording Path</span>
+              <span className="text-sm opacity-90">
+                ({currentPath?.trackPoints.length || 0} points)
+              </span>
             </span>
           </div>
         )}

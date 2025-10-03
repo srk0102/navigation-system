@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "../store";
-import { importRoute, deleteRoute, NavigationPath, Waypoint, Position } from "../store/slices/navigationSlice";
+import { importRoute, deleteRoute, NavigationPath} from "../store/slices/navigationSlice";
 import { MapComponent } from "../components/Map";
 
 export function MarineRoutes() {
@@ -17,28 +17,91 @@ export function MarineRoutes() {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
-        const routeData = JSON.parse(e.target?.result as string);
+        const importedData = JSON.parse(e.target?.result as string);
+        console.log("📥 Importing navigation data:", importedData);
 
-        // Convert date strings back to Date objects
-        const route: NavigationPath = {
-          ...routeData,
-          startTime: new Date(routeData.startTime),
-          endTime: routeData.endTime ? new Date(routeData.endTime) : null,
-          waypoints: routeData.waypoints.map((wp: Waypoint) => ({
-            ...wp,
-            timestamp: new Date(wp.timestamp),
+        // Check if this is our new comprehensive format or old format
+        let routeData: NavigationPath;
+        
+        if (importedData.route) {
+          // New comprehensive format with route object
+          console.log("📋 Detected new comprehensive format");
+          routeData = importedData.route;
+          
+          // Also import waypoints if they exist separately
+          if (importedData.waypoints && Array.isArray(importedData.waypoints)) {
+            console.log("📍 Found separate waypoints:", importedData.waypoints.length);
+            // Add waypoints to the route if they're not already there
+            if (!routeData.waypoints) {
+              routeData.waypoints = [];
+            }
+            // Merge waypoints (avoid duplicates)
+            importedData.waypoints.forEach((wp: any) => {
+              if (!routeData.waypoints.find(existing => existing.id === wp.id)) {
+                routeData.waypoints.push({
+                  ...wp,
+                  timestamp: typeof wp.timestamp === 'string' ? wp.timestamp : new Date(wp.timestamp).toISOString(),
+                });
+              }
+            });
+          }
+        } else {
+          // Old format - direct route object
+          console.log("📋 Detected legacy format");
+          routeData = importedData;
+        }
+
+        // Ensure proper data types and convert timestamps
+        const processedRoute: NavigationPath = {
+          id: routeData.id || `imported-${Date.now()}`,
+          name: routeData.name || `Imported Route ${new Date().toLocaleDateString()}`,
+          startTime: typeof routeData.startTime === 'string' ? routeData.startTime : new Date(routeData.startTime).toISOString(),
+          endTime: routeData.endTime ? (typeof routeData.endTime === 'string' ? routeData.endTime : new Date(routeData.endTime).toISOString()) : null,
+          waypoints: (routeData.waypoints || []).map((wp: any) => ({
+            id: wp.id || `wp-${Date.now()}-${Math.random()}`,
+            name: wp.name || `Waypoint ${Date.now()}`,
+            latitude: typeof wp.latitude === 'number' ? wp.latitude : parseFloat(wp.latitude),
+            longitude: typeof wp.longitude === 'number' ? wp.longitude : parseFloat(wp.longitude),
+            heading: typeof wp.heading === 'number' ? wp.heading : 0,
+            timestamp: typeof wp.timestamp === 'string' ? wp.timestamp : new Date(wp.timestamp).toISOString(),
           })),
-          trackPoints: routeData.trackPoints.map((tp: Position) => ({
-            ...tp,
-            timestamp: new Date(tp.timestamp),
+          trackPoints: (routeData.trackPoints || []).map((tp: any) => ({
+            latitude: typeof tp.latitude === 'number' ? tp.latitude : parseFloat(tp.latitude),
+            longitude: typeof tp.longitude === 'number' ? tp.longitude : parseFloat(tp.longitude),
+            heading: typeof tp.heading === 'number' ? tp.heading : 0,
+            elevation: typeof tp.elevation === 'number' ? tp.elevation : 0,
+            speed: typeof tp.speed === 'number' ? tp.speed : 0,
+            accuracy: typeof tp.accuracy === 'number' ? tp.accuracy : 0,
+            timestamp: typeof tp.timestamp === 'string' ? tp.timestamp : new Date(tp.timestamp).toISOString(),
           })),
+          distance: typeof routeData.distance === 'number' ? routeData.distance : 0,
+          duration: typeof routeData.duration === 'number' ? routeData.duration : 0,
         };
 
-        dispatch(importRoute(route));
-        setSelectedRoute(route);
-        alert('Route imported successfully!');
+        console.log("✅ Processed route data:", {
+          name: processedRoute.name,
+          waypoints: processedRoute.waypoints.length,
+          trackPoints: processedRoute.trackPoints.length,
+          distance: processedRoute.distance,
+          duration: processedRoute.duration
+        });
+
+        dispatch(importRoute(processedRoute));
+        setSelectedRoute(processedRoute);
+        
+        // Show detailed success message
+        const message = `Route imported successfully!\n\n` +
+          `📊 Statistics:\n` +
+          `• Track Points: ${processedRoute.trackPoints.length}\n` +
+          `• Waypoints: ${processedRoute.waypoints.length}\n` +
+          `• Distance: ${processedRoute.distance.toFixed(2)} km\n` +
+          `• Duration: ${processedRoute.duration.toFixed(1)} minutes`;
+        
+        alert(message);
+        
       } catch (error) {
-        alert('Failed to import route. Please check the file format.');
+        console.error("❌ Import failed:", error);
+        alert(`Failed to import route: ${(error as Error).message}\n\nPlease check the file format.`);
       }
     };
     reader.readAsText(file);
@@ -121,6 +184,7 @@ export function MarineRoutes() {
         name: wp.name,
         latitude: wp.latitude,
         longitude: wp.longitude,
+        heading: wp.heading, // Pass the heading for proper orientation
       }))
     : [];
 

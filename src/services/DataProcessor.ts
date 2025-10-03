@@ -94,27 +94,27 @@ export class DataProcessor {
       if (typeof line === 'string') {
         const s = line.trim();
 
-        // $HCHDT,xxx,T
-        if (s.startsWith('$') && s.includes('HDT')) {
-          const parts = s.split(',');
-          const deg = parseFloat(parts[1]);
-          if (!isNaN(deg)) {
-            const out: IMUOut = { heading: norm360(deg) };
-            this.lastIMU = out; return out;
-          }
-        }
+        // $HCHDT,xxx,T - GPS HEADING - IGNORE THIS (we only want IMU heading)
+        // if (s.startsWith('$') && s.includes('HDT')) {
+        //   const parts = s.split(',');
+        //   const deg = parseFloat(parts[1]);
+        //   if (!isNaN(deg)) {
+        //     const out: IMUOut = { heading: norm360(deg) };
+        //     this.lastIMU = out; return out;
+        //   }
+        // }
 
-        // $PASHR,hhmmss.sss,heading,roll,pitch,...
-        if (s.startsWith('$PASHR')) {
-          const p = s.split(',');
-          const heading = parseFloat(p[2]);
-          const roll    = parseFloat(p[3]);
-          const pitch   = parseFloat(p[4]);
-          if (![heading,roll,pitch].some(isNaN)) {
-            const out: IMUOut = { heading: norm360(heading), pitch, roll };
-            this.lastIMU = out; return out;
-          }
-        }
+        // $PASHR,hhmmss.sss,heading,roll,pitch,... - GPS HEADING - IGNORE THIS (we only want IMU heading)
+        // if (s.startsWith('$PASHR')) {
+        //   const p = s.split(',');
+        //   const heading = parseFloat(p[2]);
+        //   const roll    = parseFloat(p[3]);
+        //   const pitch   = parseFloat(p[4]);
+        //   if (![heading,roll,pitch].some(isNaN)) {
+        //     const out: IMUOut = { heading: norm360(heading), pitch, roll };
+        //     this.lastIMU = out; return out;
+        //   }
+        // }
 
         // JSON
         if (s.startsWith('{') && s.endsWith('}')) {

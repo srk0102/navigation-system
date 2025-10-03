@@ -5,6 +5,7 @@ export interface Waypoint {
   name: string
   latitude: number
   longitude: number
+  heading: number
   timestamp: string // ISO string
 }
 
@@ -63,9 +64,15 @@ export const navigationSlice = createSlice({
       state.currentPosition = action.payload
       // Do NOT push to currentPath.trackPoints here (keep in memory, not Redux)
     },
+    addTrackPoint: (state, action: PayloadAction<Position>) => {
+      if (state.currentPath) {
+        state.currentPath.trackPoints.push(action.payload)
+      }
+    },
     addWaypoint: (state, action: PayloadAction<Omit<Waypoint, 'id' | 'timestamp'>>) => {
       state.waypoints.push({
         ...action.payload,
+        heading: action.payload.heading || 0, // Default to 0 if heading not provided
         id: `wp-${Date.now()}`,
         timestamp: new Date().toISOString(),
       })
@@ -114,6 +121,7 @@ export const navigationSlice = createSlice({
 
 export const {
   updatePosition,
+  addTrackPoint,
   addWaypoint,
   removeWaypoint,
   clearWaypoints,

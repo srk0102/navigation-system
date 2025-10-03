@@ -16,8 +16,8 @@ import {
 } from "ol/control";
 import { createStringXY } from "ol/coordinate";
 import { Feature } from "ol";
-import { Point, LineString, Polygon } from "ol/geom";
-import { Style, Circle, Fill, Stroke } from "ol/style";
+import { LineString, Polygon } from "ol/geom";
+import { Style, Fill, Stroke } from "ol/style";
 import "ol/ol.css";
 import "./Map.css"; // Custom map styles
 
@@ -28,6 +28,7 @@ export interface MapPosition {
 export interface MapWaypoint extends MapPosition {
   id: string;
   name: string;
+  heading?: number;
 }
 export interface MapTrack {
   points: MapPosition[];
@@ -185,7 +186,8 @@ export function MapComponent({
         mapInstance.current = null;
       }
     };
-  }, []); // Only on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only on mount - intentionally empty deps
 
   // 2. Center map ONLY on first valid position, then never again (unless user hasn't interacted)
   useEffect(() => {
@@ -233,24 +235,66 @@ export function MapComponent({
       }
     });
 
-    // Draw waypoints
+    // Draw waypoint vessels
     waypoints.forEach((waypoint) => {
-      const markerFeature = new Feature({
-        geometry: new Point(
-          fromLonLat([waypoint.longitude, waypoint.latitude])
-        ),
+      const halfLength = vesselDimensionsMeters.length / 2;
+      const halfWidth = vesselDimensionsMeters.width / 2;
+      const heading = waypoint.heading || 0;
+      const headingRad = (heading * Math.PI) / 180;
+      
+      // Debug: Log waypoint details
+      console.log(`[Waypoint Render] ${waypoint.name}: Pos(${waypoint.latitude.toFixed(6)}, ${waypoint.longitude.toFixed(6)}), Heading: ${heading.toFixed(1)}°`);
+
+      // Calculate waypoint vessel box corners
+      const corners = [
+        { x: -halfLength, y: -halfWidth }, // Bow-left
+        { x: halfLength, y: -halfWidth },  // Stern-left  
+        { x: halfLength, y: halfWidth },   // Stern-right
+        { x: -halfLength, y: halfWidth },  // Bow-right
+      ];
+
+      const rotatedCorners = corners.map((corner) => {
+        const rotatedX =
+          corner.x * Math.cos(headingRad) - corner.y * Math.sin(headingRad);
+        const rotatedY =
+          corner.x * Math.sin(headingRad) + corner.y * Math.cos(headingRad);
+
+        // Convert rotated offsets to lat/lng
+        const dLat = rotatedY / 111320; // 1 degree latitude ≈ 111,320 meters
+        const dLng =
+          rotatedX /
+          (111320 * Math.cos((waypoint.latitude * Math.PI) / 180));
+
+        return [
+          waypoint.longitude + dLng,
+          waypoint.latitude + dLat,
+        ];
+      });
+
+      // Close the polygon
+      rotatedCorners.push(rotatedCorners[0]);
+
+      // Convert to map projection
+      const projectedCorners = rotatedCorners.map((corner) =>
+        fromLonLat(corner)
+      );
+
+      const waypointVesselFeature = new Feature({
+        geometry: new Polygon([projectedCorners]),
         name: waypoint.name,
       });
-      markerFeature.setStyle(
+
+      waypointVesselFeature.setStyle(
         new Style({
-          image: new Circle({
-            radius: 8,
-            fill: new Fill({ color: "#ef4444" }),
-            stroke: new Stroke({ color: "#fff", width: 2 }),
+          fill: new Fill({ color: "rgba(34, 197, 94, 0.3)" }), // More transparent green for waypoints
+          stroke: new Stroke({
+            color: "#16a34a", // Green border
+            width: 2,
           }),
         })
       );
-      vectorSource.addFeature(markerFeature);
+
+      vectorSource.addFeature(waypointVesselFeature);
     });
 
     // Draw vessel with accurate dimensions
@@ -259,13 +303,18 @@ export function MapComponent({
       const halfWidth = vesselDimensionsMeters.width / 2;
       const heading = currentPosition.heading || 0;
       const headingRad = (heading * Math.PI) / 180;
+      
+      // Debug: Log current vessel details
+      console.log(`[Current Vessel] Pos(${currentPosition.latitude.toFixed(6)}, ${currentPosition.longitude.toFixed(6)}), Heading: ${heading.toFixed(1)}°`);
 
       // Calculate vessel box corners
+      // Vessel length should align with heading direction (bow to stern)
+      // Vessel width should be perpendicular to heading (port to starboard)
       const corners = [
-        { x: -halfLength, y: -halfWidth },
-        { x: halfLength, y: -halfWidth },
-        { x: halfLength, y: halfWidth },
-        { x: -halfLength, y: halfWidth },
+        { x: -halfLength, y: -halfWidth }, // Bow-left
+        { x: halfLength, y: -halfWidth },  // Stern-left  
+        { x: halfLength, y: halfWidth },   // Stern-right
+        { x: -halfLength, y: halfWidth },  // Bow-right
       ];
 
       const rotatedCorners = corners.map((corner) => {
@@ -300,9 +349,9 @@ export function MapComponent({
 
       vesselFeature.setStyle(
         new Style({
-          fill: new Fill({ color: "rgba(34, 197, 94, 0.5)" }), // Semi-transparent green
+          fill: new Fill({ color: "rgba(239, 68, 68, 0.7)" }), // Semi-transparent red for current vessel
           stroke: new Stroke({
-            color: vesselDimensionsMeters.color,
+            color: "#dc2626", // Red border
             width: 3,
           }),
         })

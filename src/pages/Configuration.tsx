@@ -21,7 +21,7 @@ const feetToMeters = (feet: number): number => feet * 0.3048
 export function Configuration() {
   const dispatch = useDispatch()
   const config = useSelector((state: RootState) => state.config)
-  const connectionStatus = useSelector((state: RootState) => state.navigation.connectionStatus);
+  useSelector((state: RootState) => state.navigation.connectionStatus);
   const [activeTab, setActiveTab] = useState<'boat' | 'ublox' | 'imu'>('ublox')
   const missingConfig = getMissingConfig(config)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle')

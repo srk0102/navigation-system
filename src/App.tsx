@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { HashRouter as Router, Routes, Route } from "react-router-dom";
 import { Home, Navigation, MarineRoutes, Settings, Configuration, NotFound } from "./pages";
 import { Navbar, ConfigurationGuard } from "./components";
 import { routes } from "./constants";

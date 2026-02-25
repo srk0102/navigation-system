@@ -65,44 +65,80 @@ function setPortStatus(type: string, status: boolean) {
 }
 
 function setupPortHandlers(port: any, portType: string) {
+  // Buffer for accumulating partial NMEA lines per port
+  let nmeaBuffer = "";
+  // Store latest RMC data (speed/COG) to merge with GGA
+  let latestRMC: { speed?: number; heading?: number } = {};
+
   port.on("data", (data: any) => {
     if (portType === "primaryGNSS" || portType === "secondaryGNSS") {
-      // GNSS: split by lines, only forward valid NMEA sentences
-      const lines = data.toString().split(/\r?\n/);
+      // Accumulate data in buffer to handle partial lines
+      nmeaBuffer += data.toString();
+      const lines = nmeaBuffer.split(/\r?\n/);
+      // Keep the last partial line in buffer
+      nmeaBuffer = lines.pop() || "";
+
       lines.forEach((line: any) => {
         const trimmed = line.trim();
-        if (trimmed && trimmed.startsWith("$")) {
-          // Only parse GGA sentences for position
-          if (
-            trimmed.startsWith("$GNGGA") ||
-            trimmed.startsWith("$GPGGA")
-          ) {
-            const parts = trimmed.split(",");
-            if (parts.length > 5) {
-              const latRaw = parts[2];
-              const latDir = parts[3];
-              const lonRaw = parts[4];
-              const lonDir = parts[5];
-              if (latRaw && lonRaw) {
-                const latDeg = parseFloat(latRaw.slice(0, 2));
-                const latMin = parseFloat(latRaw.slice(2));
-                const lonDeg = parseFloat(lonRaw.slice(0, 3));
-                const lonMin = parseFloat(lonRaw.slice(3));
-                let latitude = latDeg + latMin / 60;
-                let longitude = lonDeg + lonMin / 60;
-                if (latDir === "S") latitude = -latitude;
-                if (lonDir === "W") longitude = -longitude;
-                const gnssData = {
-                  portType,
-                  data: {
-                    latitude,
-                    longitude,
-                    raw: trimmed,
-                  },
-                  timestamp: new Date().toISOString(),
-                };
-                if (win) win.webContents.send("serial-data", gnssData);
-              }
+        if (!trimmed || !trimmed.startsWith("$")) return;
+
+        // Parse RMC sentences for speed (SOG) and course (COG)
+        if (trimmed.startsWith("$GNRMC") || trimmed.startsWith("$GPRMC")) {
+          const parts = trimmed.split(",");
+          // RMC: $xxRMC,time,status,lat,N,lon,W,speedKnots,cogTrue,date,...
+          if (parts.length > 8 && parts[2] === "A") { // A = valid fix
+            const speedKnots = parseFloat(parts[7]);
+            const cogDeg = parseFloat(parts[8]);
+            if (Number.isFinite(speedKnots)) {
+              latestRMC.speed = speedKnots * 0.514444; // knots to m/s
+            }
+            if (Number.isFinite(cogDeg)) {
+              latestRMC.heading = cogDeg;
+            }
+          }
+        }
+
+        // Parse GGA sentences for position + quality + accuracy
+        if (trimmed.startsWith("$GNGGA") || trimmed.startsWith("$GPGGA")) {
+          const parts = trimmed.split(",");
+          // GGA: $xxGGA,time,lat,N,lon,W,quality,sats,hdop,alt,M,...
+          if (parts.length > 9) {
+            const latRaw = parts[2];
+            const latDir = parts[3];
+            const lonRaw = parts[4];
+            const lonDir = parts[5];
+            const quality = parseInt(parts[6]) || 0;
+            const satellites = parseInt(parts[7]) || 0;
+            const hdop = parseFloat(parts[8]) || 99;
+            const altitude = parseFloat(parts[9]) || 0;
+
+            if (latRaw && lonRaw && quality > 0) { // Only send if valid fix
+              const latDeg = parseFloat(latRaw.slice(0, 2));
+              const latMin = parseFloat(latRaw.slice(2));
+              const lonDeg = parseFloat(lonRaw.slice(0, 3));
+              const lonMin = parseFloat(lonRaw.slice(3));
+              let latitude = latDeg + latMin / 60;
+              let longitude = lonDeg + lonMin / 60;
+              if (latDir === "S") latitude = -latitude;
+              if (lonDir === "W") longitude = -longitude;
+
+              const gnssData = {
+                portType,
+                data: {
+                  latitude,
+                  longitude,
+                  altitude,
+                  quality,
+                  satellites,
+                  hdop,
+                  // Merge speed/COG from latest RMC sentence
+                  speed: latestRMC.speed,
+                  heading: latestRMC.heading,
+                  raw: trimmed,
+                },
+                timestamp: new Date().toISOString(),
+              };
+              if (win) win.webContents.send("serial-data", gnssData);
             }
           }
         }

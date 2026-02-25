@@ -30,16 +30,59 @@ export interface NavigationPath {
   duration: number
 }
 
+// A reference route loaded from a past JSON file, shown as overlay during navigation
+export interface ReferenceRoute {
+  id: string
+  name: string
+  trackPoints: Array<{ latitude: number; longitude: number }>
+  color: string
+}
+
+// Colors for reference routes so they are visually distinct
+const REFERENCE_COLORS = [
+  '#f59e0b', // amber
+  '#8b5cf6', // violet
+  '#ec4899', // pink
+  '#06b6d4', // cyan
+  '#84cc16', // lime
+  '#f97316', // orange
+  '#14b8a6', // teal
+  '#e11d48', // rose
+];
+
 export interface NavigationState {
   currentPosition: Position | null
   waypoints: Waypoint[]
   isNavigating: boolean
   currentPath: NavigationPath | null
   savedRoutes: NavigationPath[]
+  referenceRoutes: ReferenceRoute[] // past routes loaded as overlays during navigation
   connectionStatus: {
     primaryGNSS: boolean
     secondaryGNSS: boolean
     imu: boolean
+  }
+}
+
+// Load saved routes from localStorage on startup
+function loadSavedRoutes(): NavigationPath[] {
+  try {
+    const stored = localStorage.getItem('navigation_savedRoutes');
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (e) {
+    console.error('Failed to load saved routes from localStorage:', e);
+  }
+  return [];
+}
+
+// Persist saved routes to localStorage
+function persistSavedRoutes(routes: NavigationPath[]) {
+  try {
+    localStorage.setItem('navigation_savedRoutes', JSON.stringify(routes));
+  } catch (e) {
+    console.error('Failed to persist saved routes to localStorage:', e);
   }
 }
 
@@ -48,7 +91,8 @@ const initialState: NavigationState = {
   waypoints: [],
   isNavigating: false,
   currentPath: null,
-  savedRoutes: [],
+  savedRoutes: loadSavedRoutes(),
+  referenceRoutes: [],
   connectionStatus: {
     primaryGNSS: false,
     secondaryGNSS: false,
@@ -62,7 +106,6 @@ export const navigationSlice = createSlice({
   reducers: {
     updatePosition: (state, action: PayloadAction<Position>) => {
       state.currentPosition = action.payload
-      // Do NOT push to currentPath.trackPoints here (keep in memory, not Redux)
     },
     addTrackPoint: (state, action: PayloadAction<Position>) => {
       if (state.currentPath) {
@@ -72,7 +115,7 @@ export const navigationSlice = createSlice({
     addWaypoint: (state, action: PayloadAction<Omit<Waypoint, 'id' | 'timestamp'>>) => {
       state.waypoints.push({
         ...action.payload,
-        heading: action.payload.heading || 0, // Default to 0 if heading not provided
+        heading: action.payload.heading || 0,
         id: `wp-${Date.now()}`,
         timestamp: new Date().toISOString(),
       })
@@ -85,25 +128,23 @@ export const navigationSlice = createSlice({
     },
     startNavigation: (state) => {
       state.isNavigating = true
-      // Only set up currentPath meta, do not store trackPoints in Redux
       state.currentPath = {
         id: `path-${Date.now()}`,
         name: `Route ${new Date().toLocaleDateString()}`,
         startTime: new Date().toISOString(),
         endTime: null,
         waypoints: [...state.waypoints],
-        trackPoints: [], // Will be filled in memory, not Redux
+        trackPoints: [],
         distance: 0,
         duration: 0,
       }
     },
     stopNavigation: (state) => {
       state.isNavigating = false
-      // Only finalize meta, do not store trackPoints in Redux
       if (state.currentPath) {
         state.currentPath.endTime = new Date().toISOString()
-        // duration calculation can be done on export
         state.savedRoutes.push(state.currentPath)
+        persistSavedRoutes(state.savedRoutes)
         state.currentPath = null
       }
     },
@@ -112,9 +153,28 @@ export const navigationSlice = createSlice({
     },
     importRoute: (state, action: PayloadAction<NavigationPath>) => {
       state.savedRoutes.push(action.payload)
+      persistSavedRoutes(state.savedRoutes)
     },
     deleteRoute: (state, action: PayloadAction<string>) => {
       state.savedRoutes = state.savedRoutes.filter(route => route.id !== action.payload)
+      persistSavedRoutes(state.savedRoutes)
+    },
+
+    // Reference routes: load past navigation files as overlays during live navigation
+    addReferenceRoute: (state, action: PayloadAction<{ name: string; trackPoints: Array<{ latitude: number; longitude: number }> }>) => {
+      const colorIndex = state.referenceRoutes.length % REFERENCE_COLORS.length;
+      state.referenceRoutes.push({
+        id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: action.payload.name,
+        trackPoints: action.payload.trackPoints,
+        color: REFERENCE_COLORS[colorIndex],
+      });
+    },
+    removeReferenceRoute: (state, action: PayloadAction<string>) => {
+      state.referenceRoutes = state.referenceRoutes.filter(r => r.id !== action.payload)
+    },
+    clearReferenceRoutes: (state) => {
+      state.referenceRoutes = []
     },
   },
 })
@@ -130,8 +190,9 @@ export const {
   updateConnectionStatus,
   importRoute,
   deleteRoute,
+  addReferenceRoute,
+  removeReferenceRoute,
+  clearReferenceRoutes,
 } = navigationSlice.actions
 
 export default navigationSlice.reducer
-
-

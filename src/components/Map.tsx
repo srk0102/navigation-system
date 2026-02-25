@@ -16,10 +16,10 @@ import {
 } from "ol/control";
 import { createStringXY } from "ol/coordinate";
 import { Feature } from "ol";
-import { LineString, Polygon } from "ol/geom";
-import { Style, Fill, Stroke } from "ol/style";
+import { Point, LineString, Polygon } from "ol/geom";
+import { Style, Fill, Stroke, Circle as CircleStyle } from "ol/style";
 import "ol/ol.css";
-import "./Map.css"; // Custom map styles
+import "./Map.css";
 
 export interface MapPosition {
   latitude: number;
@@ -36,8 +36,16 @@ export interface MapTrack {
   width?: number;
 }
 export interface VesselDimensions {
-  length: number; // in meters
-  width: number; // in meters
+  length: number;
+  width: number;
+  color?: string;
+}
+
+// Imported region: polygon area from KMZ/KML or GPS point sets
+export interface MapImportedRegion {
+  id: string;
+  name: string;
+  points: Array<{ latitude: number; longitude: number }>;
   color?: string;
 }
 
@@ -49,11 +57,12 @@ interface MapComponentProps {
   showCurrentPosition?: boolean;
   currentPosition?: MapPosition & { heading?: number };
   vesselDimensions?: VesselDimensions;
+  importedRegions?: MapImportedRegion[];
   onMapClick?: (lat: number, lng: number) => void;
+  onMapReady?: (zoomToFit: () => void) => void;
   className?: string;
 }
 
-// Modify vessel rendering and zooming logic
 export function MapComponent({
   center,
   zoom = 2,
@@ -62,26 +71,27 @@ export function MapComponent({
   showCurrentPosition = false,
   currentPosition,
   vesselDimensions = { length: 40, width: 16, color: "#22c55e" },
+  importedRegions = [],
   onMapClick,
+  onMapReady,
   className = "w-full h-full",
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<Map | null>(null);
   const vectorLayerRef = useRef<any>(null);
-  const hasInitializedCenter = useRef<boolean>(false); // Track if map has been centered initially
-  const userInteractedRef = useRef<boolean>(false); // Track if user has interacted with map
+  const hasInitializedCenter = useRef<boolean>(false);
+  const userInteractedRef = useRef<boolean>(false);
 
-  // Memoize vessel dimensions conversion
   const vesselDimensionsMeters = React.useMemo(
     () => ({
-      length: vesselDimensions.length * 0.3048, // Convert feet to meters
-      width: vesselDimensions.width * 0.3048, // Convert feet to meters
+      length: vesselDimensions.length * 0.3048,
+      width: vesselDimensions.width * 0.3048,
       color: vesselDimensions.color,
     }),
     [vesselDimensions]
   );
 
-  // 1. Only create the map ONCE
+  // 1. Create the map ONCE
   useEffect(() => {
     if (!mapRef.current) return;
     if (mapInstance.current) return;
@@ -90,7 +100,7 @@ export function MapComponent({
       const vectorSource = new VectorSource();
       const vectorLayer = new VectorLayer({
         source: vectorSource,
-        zIndex: 10, // Ensure vector layer is on top
+        zIndex: 10,
       });
 
       const map = new Map({
@@ -135,18 +145,15 @@ export function MapComponent({
         ]),
       });
 
-      // Add enhanced interactions for better zoom/pan
       map.addInteraction(new DoubleClickZoom());
       map.addInteraction(new PinchZoom());
 
-      // Ensure mouse wheel zoom is active
       map.getInteractions().forEach((interaction) => {
         if (interaction.get("type") === "wheel") {
           interaction.setActive(true);
         }
       });
 
-      // Track user interactions (pan, zoom, etc.)
       map.getView().on("change:center", () => {
         if (hasInitializedCenter.current) {
           userInteractedRef.current = true;
@@ -170,7 +177,23 @@ export function MapComponent({
       mapInstance.current = map;
       vectorLayerRef.current = vectorLayer;
 
-      // Force a resize after a short delay to ensure proper rendering
+      // Provide zoom-to-fit callback
+      if (onMapReady) {
+        onMapReady(() => {
+          if (!mapInstance.current || !vectorLayerRef.current) return;
+          const source = vectorLayerRef.current.getSource();
+          if (!source) return;
+          const extent = source.getExtent();
+          if (extent && extent.every((v: number) => isFinite(v))) {
+            mapInstance.current.getView().fit(extent, {
+              padding: [150, 50, 270, 50],
+              duration: 1000,
+              maxZoom: 18,
+            });
+          }
+        });
+      }
+
       setTimeout(() => {
         if (mapInstance.current) {
           mapInstance.current.updateSize();
@@ -187,15 +210,12 @@ export function MapComponent({
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only on mount - intentionally empty deps
+  }, []);
 
-  // 2. Center map ONLY on first valid position, then never again (unless user hasn't interacted)
+  // 2. Center map on first valid position
   useEffect(() => {
     if (!mapInstance.current || !center) return;
 
-    // Only center if:
-    // 1. Map hasn't been initially centered yet, OR
-    // 2. User hasn't manually interacted with the map
     if (!hasInitializedCenter.current && !userInteractedRef.current) {
       const view = mapInstance.current.getView();
       view.animate({
@@ -207,12 +227,59 @@ export function MapComponent({
     }
   }, [center, zoom]);
 
-  // 3. Update features (points, vessel) when data changes
+  // 3. Update all features when data changes
   useEffect(() => {
     if (!vectorLayerRef.current) return;
     const vectorSource = vectorLayerRef.current.getSource();
     if (!vectorSource) return;
     vectorSource.clear();
+
+    // Draw imported regions as filled polygons with individual point markers
+    importedRegions.forEach((region) => {
+      if (region.points.length > 0) {
+        // Draw filled polygon if enough points
+        if (region.points.length >= 3) {
+          const polyCoords = region.points.map((p) =>
+            fromLonLat([p.longitude, p.latitude])
+          );
+          polyCoords.push(polyCoords[0]); // close polygon
+          const polyFeature = new Feature({
+            geometry: new Polygon([polyCoords]),
+            name: region.name,
+          });
+          polyFeature.setStyle(
+            new Style({
+              fill: new Fill({
+                color: region.color ? `${region.color}33` : "#fbbf2433",
+              }),
+              stroke: new Stroke({
+                color: region.color || "#fbbf24",
+                width: 3,
+              }),
+            })
+          );
+          vectorSource.addFeature(polyFeature);
+        }
+
+        // Draw individual points
+        region.points.forEach((pt, idx) => {
+          const pointFeature = new Feature({
+            geometry: new Point(fromLonLat([pt.longitude, pt.latitude])),
+            name: `${region.name} - Point ${idx + 1}`,
+          });
+          pointFeature.setStyle(
+            new Style({
+              image: new CircleStyle({
+                radius: 6,
+                fill: new Fill({ color: region.color || "#fbbf24" }),
+                stroke: new Stroke({ color: "#ffffff", width: 2 }),
+              }),
+            })
+          );
+          vectorSource.addFeature(pointFeature);
+        });
+      }
+    });
 
     // Draw tracks
     tracks.forEach((track) => {
@@ -241,16 +308,12 @@ export function MapComponent({
       const halfWidth = vesselDimensionsMeters.width / 2;
       const heading = waypoint.heading || 0;
       const headingRad = (heading * Math.PI) / 180;
-      
-      // Debug: Log waypoint details
-      console.log(`[Waypoint Render] ${waypoint.name}: Pos(${waypoint.latitude.toFixed(6)}, ${waypoint.longitude.toFixed(6)}), Heading: ${heading.toFixed(1)}°`);
 
-      // Calculate waypoint vessel box corners
       const corners = [
-        { x: -halfLength, y: -halfWidth }, // Bow-left
-        { x: halfLength, y: -halfWidth },  // Stern-left  
-        { x: halfLength, y: halfWidth },   // Stern-right
-        { x: -halfLength, y: halfWidth },  // Bow-right
+        { x: -halfLength, y: -halfWidth },
+        { x: halfLength, y: -halfWidth },
+        { x: halfLength, y: halfWidth },
+        { x: -halfLength, y: halfWidth },
       ];
 
       const rotatedCorners = corners.map((corner) => {
@@ -258,23 +321,15 @@ export function MapComponent({
           corner.x * Math.cos(headingRad) - corner.y * Math.sin(headingRad);
         const rotatedY =
           corner.x * Math.sin(headingRad) + corner.y * Math.cos(headingRad);
-
-        // Convert rotated offsets to lat/lng
-        const dLat = rotatedY / 111320; // 1 degree latitude ≈ 111,320 meters
+        const dLat = rotatedY / 111320;
         const dLng =
           rotatedX /
           (111320 * Math.cos((waypoint.latitude * Math.PI) / 180));
-
-        return [
-          waypoint.longitude + dLng,
-          waypoint.latitude + dLat,
-        ];
+        return [waypoint.longitude + dLng, waypoint.latitude + dLat];
       });
 
-      // Close the polygon
       rotatedCorners.push(rotatedCorners[0]);
 
-      // Convert to map projection
       const projectedCorners = rotatedCorners.map((corner) =>
         fromLonLat(corner)
       );
@@ -286,35 +341,26 @@ export function MapComponent({
 
       waypointVesselFeature.setStyle(
         new Style({
-          fill: new Fill({ color: "rgba(34, 197, 94, 0.3)" }), // More transparent green for waypoints
-          stroke: new Stroke({
-            color: "#16a34a", // Green border
-            width: 2,
-          }),
+          fill: new Fill({ color: "rgba(34, 197, 94, 0.3)" }),
+          stroke: new Stroke({ color: "#16a34a", width: 2 }),
         })
       );
 
       vectorSource.addFeature(waypointVesselFeature);
     });
 
-    // Draw vessel with accurate dimensions
+    // Draw current vessel
     if (showCurrentPosition && currentPosition) {
       const halfLength = vesselDimensionsMeters.length / 2;
       const halfWidth = vesselDimensionsMeters.width / 2;
       const heading = currentPosition.heading || 0;
       const headingRad = (heading * Math.PI) / 180;
-      
-      // Debug: Log current vessel details
-      console.log(`[Current Vessel] Pos(${currentPosition.latitude.toFixed(6)}, ${currentPosition.longitude.toFixed(6)}), Heading: ${heading.toFixed(1)}°`);
 
-      // Calculate vessel box corners
-      // Vessel length should align with heading direction (bow to stern)
-      // Vessel width should be perpendicular to heading (port to starboard)
       const corners = [
-        { x: -halfLength, y: -halfWidth }, // Bow-left
-        { x: halfLength, y: -halfWidth },  // Stern-left  
-        { x: halfLength, y: halfWidth },   // Stern-right
-        { x: -halfLength, y: halfWidth },  // Bow-right
+        { x: -halfLength, y: -halfWidth },
+        { x: halfLength, y: -halfWidth },
+        { x: halfLength, y: halfWidth },
+        { x: -halfLength, y: halfWidth },
       ];
 
       const rotatedCorners = corners.map((corner) => {
@@ -322,23 +368,18 @@ export function MapComponent({
           corner.x * Math.cos(headingRad) - corner.y * Math.sin(headingRad);
         const rotatedY =
           corner.x * Math.sin(headingRad) + corner.y * Math.cos(headingRad);
-
-        // Convert rotated offsets to lat/lng (actual size, no scaling)
-        const dLat = rotatedY / 111320; // 1 degree latitude ≈ 111,320 meters
+        const dLat = rotatedY / 111320;
         const dLng =
           rotatedX /
           (111320 * Math.cos((currentPosition.latitude * Math.PI) / 180));
-
         return [
           currentPosition.longitude + dLng,
           currentPosition.latitude + dLat,
         ];
       });
 
-      // Close the polygon
       rotatedCorners.push(rotatedCorners[0]);
 
-      // Convert to map projection
       const projectedCorners = rotatedCorners.map((corner) =>
         fromLonLat(corner)
       );
@@ -349,11 +390,8 @@ export function MapComponent({
 
       vesselFeature.setStyle(
         new Style({
-          fill: new Fill({ color: "rgba(239, 68, 68, 0.7)" }), // Semi-transparent red for current vessel
-          stroke: new Stroke({
-            color: "#dc2626", // Red border
-            width: 3,
-          }),
+          fill: new Fill({ color: "rgba(239, 68, 68, 0.7)" }),
+          stroke: new Stroke({ color: "#dc2626", width: 3 }),
         })
       );
 
@@ -365,6 +403,7 @@ export function MapComponent({
     showCurrentPosition,
     currentPosition,
     vesselDimensionsMeters,
+    importedRegions,
   ]);
 
   return (

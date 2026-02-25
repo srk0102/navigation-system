@@ -20,6 +20,7 @@ export interface UbloxConfig {
 
 export interface ImuConfig {
   port: SerialPortConfig
+  headingOffset: number // degrees to add to IMU heading for mounting correction
   calibration: {
     compass: boolean
     gyro: boolean
@@ -64,6 +65,7 @@ const loadConfigFromStorage = (): NavigationConfig => {
         baudRate: 115200, // Common IMU default
         enabled: false,
       },
+      headingOffset: 0, // degrees
       calibration: {
         compass: false,
         gyro: false,

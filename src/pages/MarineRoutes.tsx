@@ -1,14 +1,27 @@
 import { useRef, useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "../store";
-import { importRoute, deleteRoute, NavigationPath} from "../store/slices/navigationSlice";
+import { importRoute, deleteRoute, setContinuedSession, NavigationPath } from "../store/slices/navigationSlice";
+import { useNavigate } from "react-router-dom";
 import { MapComponent } from "../components/Map";
 
 export function MarineRoutes() {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   const { savedRoutes } = useSelector((state: RootState) => state.navigation);
   const [selectedRoute, setSelectedRoute] = useState<NavigationPath | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Continue navigation from a saved route: loads its data as overlay and opens Navigation page
+  const handleContinueFromRoute = (route: NavigationPath) => {
+    dispatch(setContinuedSession({
+      trackPoints: route.trackPoints,
+      waypoints: route.waypoints,
+      sessionName: route.name,
+      sessionDate: route.startTime,
+    }));
+    navigate('/navigation');
+  };
 
   const handleImportRoute = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -259,21 +272,33 @@ export function MarineRoutes() {
                       <h3 className="font-semibold text-gray-900 dark:text-white text-sm">
                         {route.name}
                       </h3>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteRoute(route.id);
-                        }}
-                        className="text-red-600 dark:text-red-400 hover:text-red-700"
-                      >
-                        <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-                          <path
-                            fillRule="evenodd"
-                            d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
-                            clipRule="evenodd"
-                          />
-                        </svg>
-                      </button>
+                      <div className="flex items-center space-x-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleContinueFromRoute(route);
+                          }}
+                          className="text-blue-600 dark:text-blue-400 hover:text-blue-700 text-xs font-medium px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30"
+                          title="Continue navigation from this route"
+                        >
+                          Continue
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteRoute(route.id);
+                          }}
+                          className="text-red-600 dark:text-red-400 hover:text-red-700"
+                        >
+                          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-1 text-xs">

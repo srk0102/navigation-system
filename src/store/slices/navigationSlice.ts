@@ -30,7 +30,7 @@ export interface NavigationPath {
   duration: number
 }
 
-// A reference route loaded from a past JSON file, shown as overlay during navigation
+// Reference route loaded from a past JSON file, shown as track overlay
 export interface ReferenceRoute {
   id: string
   name: string
@@ -38,17 +38,28 @@ export interface ReferenceRoute {
   color: string
 }
 
-// Colors for reference routes so they are visually distinct
+// Imported region from KMZ/KML or GPS point sets, rendered as filled polygon
+export interface ImportedRegion {
+  id: string
+  name: string
+  points: Array<{ latitude: number; longitude: number }>
+  color: string
+  timestamp: string
+}
+
+// Continued session: resume a previous navigation with its data visible
+export interface ContinuedSession {
+  trackPoints: Position[]
+  waypoints: Waypoint[]
+  sessionName: string
+  sessionDate: string
+}
+
+// Colors for reference routes
 const REFERENCE_COLORS = [
-  '#f59e0b', // amber
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#06b6d4', // cyan
-  '#84cc16', // lime
-  '#f97316', // orange
-  '#14b8a6', // teal
-  '#e11d48', // rose
-];
+  '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4',
+  '#84cc16', '#f97316', '#14b8a6', '#e11d48',
+]
 
 export interface NavigationState {
   currentPosition: Position | null
@@ -56,7 +67,9 @@ export interface NavigationState {
   isNavigating: boolean
   currentPath: NavigationPath | null
   savedRoutes: NavigationPath[]
-  referenceRoutes: ReferenceRoute[] // past routes loaded as overlays during navigation
+  referenceRoutes: ReferenceRoute[]
+  importedRegions: ImportedRegion[]
+  continuedSession: ContinuedSession | null
   connectionStatus: {
     primaryGNSS: boolean
     secondaryGNSS: boolean
@@ -67,22 +80,19 @@ export interface NavigationState {
 // Load saved routes from localStorage on startup
 function loadSavedRoutes(): NavigationPath[] {
   try {
-    const stored = localStorage.getItem('navigation_savedRoutes');
-    if (stored) {
-      return JSON.parse(stored);
-    }
+    const stored = localStorage.getItem('navigation_savedRoutes')
+    if (stored) return JSON.parse(stored)
   } catch (e) {
-    console.error('Failed to load saved routes from localStorage:', e);
+    console.error('Failed to load saved routes from localStorage:', e)
   }
-  return [];
+  return []
 }
 
-// Persist saved routes to localStorage
 function persistSavedRoutes(routes: NavigationPath[]) {
   try {
-    localStorage.setItem('navigation_savedRoutes', JSON.stringify(routes));
+    localStorage.setItem('navigation_savedRoutes', JSON.stringify(routes))
   } catch (e) {
-    console.error('Failed to persist saved routes to localStorage:', e);
+    console.error('Failed to persist saved routes to localStorage:', e)
   }
 }
 
@@ -93,6 +103,8 @@ const initialState: NavigationState = {
   currentPath: null,
   savedRoutes: loadSavedRoutes(),
   referenceRoutes: [],
+  importedRegions: [],
+  continuedSession: null,
   connectionStatus: {
     primaryGNSS: false,
     secondaryGNSS: false,
@@ -160,21 +172,40 @@ export const navigationSlice = createSlice({
       persistSavedRoutes(state.savedRoutes)
     },
 
-    // Reference routes: load past navigation files as overlays during live navigation
+    // Reference routes: past JSON navigation files as track overlays
     addReferenceRoute: (state, action: PayloadAction<{ name: string; trackPoints: Array<{ latitude: number; longitude: number }> }>) => {
-      const colorIndex = state.referenceRoutes.length % REFERENCE_COLORS.length;
+      const colorIndex = state.referenceRoutes.length % REFERENCE_COLORS.length
       state.referenceRoutes.push({
         id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name: action.payload.name,
         trackPoints: action.payload.trackPoints,
         color: REFERENCE_COLORS[colorIndex],
-      });
+      })
     },
     removeReferenceRoute: (state, action: PayloadAction<string>) => {
       state.referenceRoutes = state.referenceRoutes.filter(r => r.id !== action.payload)
     },
     clearReferenceRoutes: (state) => {
       state.referenceRoutes = []
+    },
+
+    // Imported regions: KMZ/KML GPS polygon areas rendered as filled regions on map
+    addImportedRegion: (state, action: PayloadAction<ImportedRegion>) => {
+      state.importedRegions.push(action.payload)
+    },
+    removeImportedRegion: (state, action: PayloadAction<string>) => {
+      state.importedRegions = state.importedRegions.filter(r => r.id !== action.payload)
+    },
+    clearImportedRegions: (state) => {
+      state.importedRegions = []
+    },
+
+    // Continued session: load a previous session's data to display during new navigation
+    setContinuedSession: (state, action: PayloadAction<ContinuedSession>) => {
+      state.continuedSession = action.payload
+    },
+    clearContinuedSession: (state) => {
+      state.continuedSession = null
     },
   },
 })
@@ -193,6 +224,11 @@ export const {
   addReferenceRoute,
   removeReferenceRoute,
   clearReferenceRoutes,
+  addImportedRegion,
+  removeImportedRegion,
+  clearImportedRegions,
+  setContinuedSession,
+  clearContinuedSession,
 } = navigationSlice.actions
 
 export default navigationSlice.reducer
